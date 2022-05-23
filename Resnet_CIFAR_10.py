@@ -4,9 +4,10 @@ import torchvision
 import torch.utils.data
 import torch.nn as nn
 import torchvision.transforms as t
+import numpy as np
 from statistics import mean
+from torchsummary import summary
 from tqdm import tqdm
-from torchsummary import summary as summary
 
 
 def conv3x3(in_planes, out_planes):
@@ -52,9 +53,9 @@ class Resnet(nn.Module):
         self.bn1 = nn.BatchNorm2d(self.in_planes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(3, 2, 1)
-        self.layer1 = self.make_layer(16, 6)
-        self.layer2 = self.make_layer(32, 6)
-        self.layer3 = self.make_layer(64, 6)
+        self.layer1 = self.make_layer(16, 10)
+        self.layer2 = self.make_layer(32, 10)
+        self.layer3 = self.make_layer(64, 10)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(64, 10)
 
@@ -91,10 +92,41 @@ class Resnet(nn.Module):
         return x
 
 
-def train(optimizer, model, num_epochs):
+class EarlyStopping:
+    def __init__(self, patience, delta):
+        self.patience = patience
+        self.delta = delta
+        self.best_score = None
+        self.counter = 0
+        self.time_to_stop = False
+        self.val_loss_min = np.Inf
+
+    def __call__(self, val_loss):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            print(f'EarlyStopping Counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.time_to_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss):
+        torch.save(model.state_dict(), 'checkpoint.pt')
+        self.val_loss_min = val_loss
+
+
+def train():
     criterion = nn.CrossEntropyLoss()
     train_losses = []
     test_losses = []
+
+    early_stopping = EarlyStopping(patience=5, delta=0)
+    test_acc_list = []
 
     for epoch in range(num_epochs):
         print('Epoch', epoch + 1)
@@ -116,6 +148,7 @@ def train(optimizer, model, num_epochs):
             correct_train += torch.sum(preds == targets.data)
 
         train_losses.append(mean(batch_losses))
+        scheduler.step()
 
         model.eval()
         y_pred = []
@@ -124,23 +157,33 @@ def train(optimizer, model, num_epochs):
                 batch = batch.to(device)
                 targets = targets.to(device)
                 outputs = model(batch)
-                y_pred.extend( outputs.argmax(dim=1).cpu().numpy() )
+                loss = criterion(outputs, targets)
+                test_losses.append(loss.item())
+                y_pred.extend(outputs.argmax(dim=1).cpu().numpy())
                 _, preds = torch.max(outputs, 1)
                 correct_test += torch.sum(preds == targets.data)
 
         train_acc = correct_train.item() / train_set.data.shape[0]
         test_acc = correct_test.item() / test_set.data.shape[0]
 
+        print('Training loss: {:.4f}'.format(np.average(train_losses)))
+        print('Test loss: {:.4f}'.format(np.average(test_losses)))
         print('Training accuracy: {:.2f}%'.format(float(train_acc) * 100))
         print('Test accuracy: {:.2f}%\n'.format(float(test_acc) * 100))
 
-    return train_losses, test_losses, y_pred
+        test_acc_list.append(float(test_acc) * 100)
+        early_stopping(np.average(test_losses))
+        if early_stopping.time_to_stop:
+            print("Early Stopping")
+            break
+
+    return test_acc_list, y_pred
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 batch_size = 128
 learning_rate = 0.1
-num_epochs = 50
+num_epochs = 1000
 
 '''
 temp = Resnet()
@@ -148,17 +191,28 @@ summary(temp, (3, 32, 32))
 '''
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-dataset_transform = t.Compose([t.ToTensor(), t.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-train_set = torchvision.datasets.CIFAR10('./CIFAR-10', train=True, download=True, transform=dataset_transform)
-test_set = torchvision.datasets.CIFAR10('./CIFAR-10', train=False, download=True, transform=dataset_transform)
+transforms_train = t.Compose([
+    t.RandomCrop(32, padding=4),
+    t.RandomHorizontalFlip(),
+    t.ToTensor(),
+    t.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+transforms_test = t.Compose([
+    t.ToTensor(),
+    t.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+
+train_set = torchvision.datasets.CIFAR10('./CIFAR-10', train=True, download=True, transform=transforms_train)
+test_set = torchvision.datasets.CIFAR10('./CIFAR-10', train=False, download=True, transform=transforms_test)
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
 model = Resnet()
 model.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2400, gamma=0.1)
 
-train_loss, test_loss, y_pred = train(optimizer, model, num_epochs)
+test_acc_list, y_pred = train()
 
 with open("./submit.csv", mode="w") as file:
     writer = csv.writer(file, delimiter=",")

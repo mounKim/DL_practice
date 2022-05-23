@@ -1,4 +1,4 @@
-##Resnet
+## Resnet
 
 Resnet use residual(잔차) learning.
 Network depth is crucial importance.
@@ -14,4 +14,5 @@ The first layer is 3x3 convolutions. Then resnet use a stack of 6n layers
 with 3x3 convolutions on the feature map of size {32, 16, 8}
 respectively. The number of filters are {16, 32, 64} respectively.
 
-220515 : 81.93% at epoch 41 (22m 41s)
+220515 : 81.93% at epoch 41<br>
+220522 : 89.79% at epoch 195 (EarlyStopping/DataAugmentation 추가)<br>
